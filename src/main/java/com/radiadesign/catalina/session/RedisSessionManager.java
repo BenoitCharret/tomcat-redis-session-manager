@@ -303,7 +303,6 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
 
     try {
       log.fine("Attempting to load session " + id + " from Redis");
-      System.out.println("Attempting to load session " + id + " from Redis");
 
       byte[] data = jedisCluster.get(id.getBytes());
       error = false;
