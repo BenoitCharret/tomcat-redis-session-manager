@@ -11,6 +11,7 @@ import org.apache.catalina.Session;
 import org.apache.catalina.session.ManagerBase;
 
 import redis.clients.jedis.HostAndPort;
+import redis.clients.jedis.JedisCluster;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.Jedis;
@@ -22,7 +23,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -38,7 +41,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
   protected int database = 0;
   protected String password = null;
   protected int timeout = Protocol.DEFAULT_TIMEOUT;
-  protected JedisSlotBasedConnectionHandler connectionPool;
+  protected JedisCluster jedisCluster;
 
   protected RedisSessionHandlerValve handlerValve;
   protected ThreadLocal<RedisSession> currentSession = new ThreadLocal<RedisSession>();
@@ -109,27 +112,6 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
     // Do nothing.
   }
 
-  protected Jedis acquireConnection() {
-    Jedis jedis = connectionPool.getConnection();
-
-    if (getDatabase() != 0) {
-      jedis.select(getDatabase());
-    }
-
-    return jedis;
-  }
-
-  protected void returnConnection(Jedis jedis, Boolean error) {
-    if (error) {
-      connectionPool.returnBrokenConnection(jedis);
-    } else {
-      connectionPool.returnConnection(jedis);
-    }
-  }
-
-  protected void returnConnection(Jedis jedis) {
-    returnConnection(jedis, false);
-  }
 
   public void load() throws ClassNotFoundException, IOException {
 
@@ -225,8 +207,6 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
     Boolean error = true;
     Jedis jedis = null;
 
-    try {
-      jedis = acquireConnection();
 
       // Ensure generation of a unique session identifier.
       do {
@@ -247,11 +227,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
 
       session.setId(sessionId);
       session.tellNew();
-    } finally {
-      if (jedis != null) {
-        returnConnection(jedis, error);
-      }
-    }
+
 
     return session;
   }
@@ -295,61 +271,41 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
     return session;
   }
 
-  public void clear() {
-    Jedis jedis = null;
+ /* public void clear() {
     Boolean error = true;
-    try {
-      jedis = acquireConnection();
-      jedis.flushDB();
-      error = false;
-    } finally {
-      if (jedis != null) {
-        returnConnection(jedis, error);
-      }
-    }
-  }
 
-  public int getSize() throws IOException {
-    Jedis jedis = null;
+      jedisCluster.fflushDB();
+      error = false;
+
+  }*/
+
+  /*public int getSize() throws IOException {
     Boolean error = true;
-    try {
-      jedis = acquireConnection();
-      int size = jedis.dbSize().intValue();
+
+      int size = jedisCluster.getSize().intValue();
       error = false;
       return size;
-    } finally {
-      if (jedis != null) {
-        returnConnection(jedis, error);
-      }
-    }
-  }
 
+  }*/
+/*
   public String[] keys() throws IOException {
-    Jedis jedis = null;
     Boolean error = true;
-    try {
-      jedis = acquireConnection();
-      Set<String> keySet = jedis.keys("*");
+          Set<String> keySet = jedisCluster.keys("*");
       error = false;
       return keySet.toArray(new String[keySet.size()]);
-    } finally {
-      if (jedis != null) {
-        returnConnection(jedis, error);
-      }
-    }
-  }
+
+  }*/
 
   public RedisSession loadSessionFromRedis(String id) throws IOException {
     RedisSession session;
 
-    Jedis jedis = null;
     Boolean error = true;
 
     try {
       log.fine("Attempting to load session " + id + " from Redis");
+      System.out.println("Attempting to load session " + id + " from Redis");
 
-      jedis = acquireConnection();
-      byte[] data = jedis.get(id.getBytes());
+      byte[] data = jedisCluster.get(id.getBytes());
       error = false;
 
       if (data == null) {
@@ -379,19 +335,15 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
       return session;
     } catch (IOException e) {
       log.severe(e.getMessage());
+      e.printStackTrace();
       throw e;
     } catch (ClassNotFoundException ex) {
       log.log(Level.SEVERE, "Unable to deserialize into session", ex);
       throw new IOException("Unable to deserialize into session", ex);
-    } finally {
-      if (jedis != null) {
-        returnConnection(jedis, error);
-      }
     }
   }
 
   public void save(Session session) throws IOException {
-    Jedis jedis = null;
     Boolean error = true;
 
     try {
@@ -411,44 +363,32 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
       redisSession.resetDirtyTracking();
       byte[] binaryId = redisSession.getId().getBytes();
 
-      jedis = acquireConnection();
 
       //if (sessionIsDirty || currentSessionIsPersisted.get() != true) {
-        jedis.set(binaryId, serializer.serializeFrom(redisSession));
+        jedisCluster.set(binaryId, serializer.serializeFrom(redisSession));
       //}
 
       currentSessionIsPersisted.set(true);
 
       log.fine("Setting expire timeout on session [" + redisSession.getId() + "] to " + getMaxInactiveInterval());
-      jedis.expire(binaryId, getMaxInactiveInterval());
+      jedisCluster.expire(binaryId, getMaxInactiveInterval());
 
       error = false;
     } catch (IOException e) {
       log.severe(e.getMessage());
 
       throw e;
-    } finally {
-      if (jedis != null) {
-        returnConnection(jedis, error);
-      }
     }
   }
 
   public void remove(Session session) {
-    Jedis jedis = null;
     Boolean error = true;
 
     log.fine("Removing session ID : " + session.getId());
 
-    try {
-      jedis = acquireConnection();
-      jedis.del(session.getId());
+      jedisCluster.del(session.getId());
       error = false;
-    } finally {
-      if (jedis != null) {
-        returnConnection(jedis, error);
-      }
-    }
+
   }
 
   public void afterRequest() {
@@ -473,7 +413,21 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
       // TODO: Allow configuration of pool (such as size...)
       Set<HostAndPort> jedisClusterNodes = new HashSet<HostAndPort>();
       jedisClusterNodes.add(new HostAndPort(getHost(), getPort()));
-      connectionPool = new JedisSlotBasedConnectionHandler(jedisClusterNodes,new JedisPoolConfig(), getTimeout());
+      jedisCluster= new JedisCluster(jedisClusterNodes);
+      for (Map.Entry<String, JedisPool> entry : jedisCluster.getClusterNodes().entrySet()) {
+        System.out.println("node redis - " +entry.getKey());
+      }
+     /* // make a first discover step and then change host name
+      jedisClusterNodes = new HashSet<HostAndPort>();
+      jedisClusterNodes.add(new HostAndPort(getHost(), getPort()));
+      for (Map.Entry<String, JedisPool> entry : jedisCluster.getClusterNodes().entrySet()) {
+        jedisClusterNodes.add(new HostAndPort(getHost(),Integer.parseInt(entry.getKey().split(":")[1])));
+      }
+      jedisCluster= new JedisCluster(jedisClusterNodes);
+      for (Map.Entry<String, JedisPool> entry : jedisCluster.getClusterNodes().entrySet()) {
+        System.out.println("node redis - " +entry.getKey());
+      }*/
+
     } catch (Exception e) {
       e.printStackTrace();
       throw new LifecycleException("Error Connecting to Redis", e);
